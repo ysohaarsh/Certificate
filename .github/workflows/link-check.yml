@@ -1,0 +1,53 @@
+name: Link check
+
+# Weekly scan of Markdown and HTML for dead links.
+# Keeps one open "broken-links" issue while links are broken and closes it once they're fixed.
+on:
+  schedule:
+    - cron: "23 4 * * 1" # Mondays 04:23 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  lychee:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check links
+        id: lychee
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress --exclude-loopback --exclude "linkedin\\.com"
+            --exclude-path node_modules --exclude-path dist --exclude-path out
+            --accept 200..=299,403,429
+            './**/*.md' './**/*.html'
+          fail: false
+
+      - name: Sync issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing=$(gh issue list --label broken-links --state open --json number --jq '.[0].number // empty')
+          if [ "$EXIT_CODE" != "0" ]; then
+            gh label create broken-links --color d73a4a --description "Dead links found by the weekly link check" 2>/dev/null || true
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --body-file lychee/out.md
+              gh issue comment "$existing" --body "Still broken as of $RUN_URL"
+            else
+              gh issue create --title "Broken links found" --label broken-links --body-file lychee/out.md
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "All links pass again ($RUN_URL)."
+          fi
